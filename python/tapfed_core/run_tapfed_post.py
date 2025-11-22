@@ -1,0 +1,132 @@
+﻿# -*- coding: utf-8 -*-
+# python/tapfed_core/run_tapfed_post.py
+"""
+Build a demo TAPFed round (3 participants), upload encrypted objects,
+build Merkle root, and post to the on-chain DKGRegistry contract (Chain A).
+Requires:
+ - python/abi/DKGRegistry.json (artifact ABI)
+ - anvil running on RPC_A (default http://127.0.0.1:8545)
+ - web3 installed in your Python environment
+"""
+import os, json, time
+from tapfed_core.model import SimpleModel
+from tapfed_core.enc import ec_encrypt_scalar, ec_add_ciphertexts
+from proofs.mk_tree import MerkleTree
+from utils.ipfs_client import upload_json
+from web3 import Web3
+
+RPC = os.getenv("RPC_A", "http://127.0.0.1:8545")
+DKG_ADDR = os.getenv("DKG_A_ADDR", "")   # set this env var or edit below
+ROUND_ID = int(os.getenv("ROUND_ID", "1"))
+
+def run_and_post(round_id=1, dkg_addr=None):
+    print("Connecting to RPC:", RPC)
+    w3 = Web3(Web3.HTTPProvider(RPC))
+    if not w3.is_connected():
+        print("ERROR: cannot connect to RPC:", RPC)
+        return
+
+    # 1) prepare demo participants and encrypt biases
+    participants = []
+    for i in range(3):
+        m = SimpleModel()
+        m.fc2.bias.data.fill_(0.1 * (i+1))
+        participants.append(m)
+
+    cids = []
+    leaves = []
+    enc_objs = []
+    for i, p in enumerate(participants):
+        val = float(p.fc2.bias.data[0].item())
+        enc = ec_encrypt_scalar(None, val)
+        obj = {'participant': i, 'enc': enc}
+        cid = upload_json(obj)
+        cids.append(cid)
+        enc_objs.append(enc)
+        leaves.append(json.dumps(obj).encode())
+        print(f'Uploaded participant {i}: bias={val} -> {cid}')
+
+    # 2) build Merkle tree
+    mt = MerkleTree(leaves)
+    root = mt.root()
+    print('Merkle root (hex):', root.hex())
+
+    # 3) post to on-chain DKGRegistry
+    if dkg_addr is None:
+        dkg_addr = DKG_ADDR
+    if not dkg_addr:
+        print("ERROR: DKG address not provided. Set DKG_A_ADDR env var.")
+        return
+
+    # load ABI artifact (handles both raw abi and hardhat/foundry artifact)
+    abi_path = os.path.join(os.path.dirname(__file__), '..', 'abi', 'DKGRegistry.json')
+    with open(os.path.abspath(abi_path), 'r', encoding='utf-8') as f:
+        artifact = json.load(f)
+    abi = artifact.get('abi', artifact)
+
+    contract = w3.eth.contract(address=w3.to_checksum_address(dkg_addr), abi=abi)
+
+    # Use first unlocked account on local Anvil node if available
+    sender = None
+    try:
+        accounts = w3.eth.accounts
+        if accounts:
+            sender = accounts[0]
+    except Exception:
+        sender = None
+
+    if not sender:
+        pk = os.getenv("PRIVATE_KEY", None)
+        if not pk:
+            print("No unlocked accounts found and no PRIVATE_KEY provided. Cannot send tx.")
+            return
+        sender = w3.eth.account.from_key(pk).address
+
+    print("Using sender:", sender)
+
+    # Try simple transact (node unlocked account) first
+    try:
+        txh = contract.functions.registerRound(round_id, root, cids[0]).transact({'from': sender})
+        rec = w3.eth.wait_for_transaction_receipt(txh)
+        print("Posted round tx:", txh.hex())
+    except Exception as e:
+        print("transact() failed (trying signed tx):", e)
+        pk = os.getenv("PRIVATE_KEY", None)
+        if not pk:
+            print("No PRIVATE_KEY to sign tx. Exiting.")
+            return
+        try:
+            tx = contract.functions.registerRound(round_id, root, cids[0]).build_transaction({
+                'from': sender,
+                'gas': 4000000,
+                'nonce': w3.eth.get_transaction_count(sender)
+            })
+            signed = w3.eth.account.sign_transaction(tx, private_key=pk)
+            txh = w3.eth.send_raw_transaction(getattr(signed, 'raw_transaction', None) or getattr(signed, 'rawTransaction', None))
+            rec = w3.eth.wait_for_transaction_receipt(txh)
+            print("Posted (signed) round tx:", txh.hex())
+        except Exception as e2:
+            print("Signed tx failed:", e2)
+            return
+
+    # 4) verify stored info
+    try:
+        info = contract.functions.getRoundInfo(round_id).call()
+        print("On-chain round info:", info)
+    except Exception as e:
+        print("Could not read round info after post:", e)
+
+    # 5) show aggregated demo decrypt if available
+    agg = ec_add_ciphertexts(enc_objs)
+    if isinstance(agg, dict) and 'value_scaled' in agg:
+        summed = agg['value_scaled'] / 10000.0
+        print("Demo aggregated sum (decrypted):", summed)
+    else:
+        print("Aggregated ciphertext object:", agg)
+
+if __name__ == '__main__':
+    run_and_post(round_id=ROUND_ID, dkg_addr=os.getenv('DKG_A_ADDR', None))
+
+
+
+
