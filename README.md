@@ -18,9 +18,9 @@ It simulates a dual‑chain setup:
 
 ## 2. System Architecture
 
-![TAPFed Architecture](/mnt/data/tapfed_architecture.png)
+![TAPFed Architecture](docs/images/tapfed_architecture.png)
 
-The TAPFed pipeline consists of three major components:
+High level components:
 
 1. **Clients** performing local model updates.
 2. **Aggregator** producing encrypted contributions.
@@ -30,7 +30,7 @@ The TAPFed pipeline consists of three major components:
 
 ## 3. Cross‑Chain Event Flow
 
-![Cross Chain Flow](/mnt/data/cross_chain_flow.png)
+![Cross Chain Flow](docs/images/cross_chain_flow.png)
 
 Workflow:
 
@@ -40,26 +40,28 @@ Workflow:
 
    * `registerRound` → to DKGRegistry on Chain B
    * `storeCipher` → to CipherStore on Chain B
-4. Chain B becomes a synchronized mirror.
+4. Chain B becomes a synchronized mirror for both registry and ciphers.
 
 ---
 
 ## 4. DKG + FE Workflow
 
-![DKG FE Workflow](/mnt/data/dkg_fe_workflow.png)
+![DKG FE Workflow](docs/images/dkg_fe_workflow.png)
 
 Detailed Steps:
 
 1. **DKG** creates distributed private key shares.
-2. **Functional Encryption** encrypts the `fc2.bias` vector.
-3. **Aggregation** decrypts FE ciphertexts to compute a global sum.
-4. FE decrypt ensures **privacy**, and DKG ensures **no single party has the key**.
+2. **Functional Encryption** encrypts the `fc2.bias` vector per participant.
+3. **Aggregator** posts a Merkle root and individual cipher entries (CID + root) on Chain A. 
+4. **Relayer** forwards on-chain entries to Chain B for auditability.
+5. **Aggregation** decrypts FE ciphertexts to compute a global sum.
+6. FE decrypt ensures **privacy**, and DKG ensures **no single party has the key**.
 
 ---
 
 ## 5. Repository Structure
 
-![Folder Structure](/mnt/data/folder_structure.png)
+![Folder Structure](docs/images/folder_structure.png)
 
 ```
 tapfed-crosschain-demo/
@@ -92,64 +94,43 @@ tapfed-crosschain-demo/
 
 ### ✔ Poster Script Working
 
-* Implemented enhanced `run_tapfed_post_with_ciphers.py` which:
-
-  * Uploads encrypted ciphers
-  * Computes Merkle root
-  * Posts round via signed transaction
-  * Posts individual ciphers
-  * Verifies storage
+`run_tapfed_post_with_ciphers.py`:
+* Uploads encrypted ciphers to `local_ipfs_store/` (simulated IPFS).
+* Computes Merkle root for the round.
+* Posts `registerRound(roundId, root, metadataCID)` on Chain A.
+* Posts individual `postCipher(roundId, cid, root)` transactions on Chain A.
 
 ### ✔ Relayer Working (DKGRegistry)
 
-* Successfully mirrored **round registrations** to Chain B.
-* Verified using `verify_dkg_chainb.py`.
+* Relayer mirrors `registerRound` events from Chain A → Chain B.
+* Verified `lastRound` consistent on both chains.
+
+---
+## 7. How to Run the Demo
+
+1. **Start two Anvil/Hardhat nodes (Chain A and Chain B)**
+
+    * (Run two terminals, each running anvil/hardhat on different RPC ports, e.g. 8545 and 8546.)
+
+2. **Deploy contracts**
+
+    * (using Foundry/Hardhat scripts)
+
+3. **Post a round (Chain A)**
+
+`python python/tapfed_core/run_tapfed_post_with_ciphers.py`
+
+4. **Start the relayer**
+
+`python python/chain_bridge/relayer_full.py`
+
+5. **Verify ciphers**
+
+`python python/scripts/verify_ciphers.py`
 
 ---
 
-## 7. Current Issue (as of last logs)
-
-Even though rounds mirror correctly:
-
-* **CipherStore on Chain B is not receiving ciphers.**
-* Chain B always returns: `getCiphers(round) = []`.
-* Yet Chain A stores ciphers normally.
-
-This indicates the relayer is:
-
-* **Not detecting CipherStore events** OR
-* **Calling Chain B’s CipherStore incorrectly**.
-
-Diagnosis so far:
-
-* ABI verified
-* Contract address correct
-* Web3 connection working
-* No logs found in transaction receipts
-
-Next step is to patch the relayer to explicitly subscribe to `CipherStored` and forward them.
-
----
-
-## 8. What Remains
-
-### 🔧 **Remaining Tasks:**
-
-1. **Fix CipherStore mirroring** — ensure `CipherStored(cid)` appears on Chain B.
-2. **Modify relayer** to:
-
-   * Listen specifically to `CipherStored` events on Chain A
-   * Pass `{ roundId, cid }` to Chain B
-3. **Add event decoding debugging**
-4. **Add replay protection** to avoid duplicate writes
-5. **Add `lastMirroredRound` tracking** for CipherStore
-6. **Stress test with multiple rounds** (2 → 10 rounds)
-7. **Generate final FE-based aggregated bias** from cross‑chain verification
-8. **Final reporting + screenshots** for thesis
-
----
-
-## 9. Academic Contributions
+## 8. Academic Contributions
 
 This project demonstrates:
 
@@ -161,7 +142,7 @@ This project demonstrates:
 
 ---
 
-## 10. Contacts
+## 9. Contacts
 
 Maintainer: **Shivam Yadav** (IIIT Guwahati)
 Email: *[shivam.yadav24m@iiitg.ac.in](mailto:shivam.yadav24m@iiitg.ac.in)*
